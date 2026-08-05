@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ghostgit</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ONBOARDING SCREEN -->
+  <section id="onboarding" class="screen">
+    <div class="onboarding-card">
+      <h1 class="brand">👻 Ghostgit</h1>
+      <p class="subtitle">A minimal, incognito-style Git client.</p>
+
+      <div class="field">
+        <label>Project Folder <span class="required-tag">Required</span></label>
+        <div class="row">
+          <input id="repoPath" type="text" placeholder="No folder selected" readonly />
+          <button id="pickFolderBtn" class="btn secondary">Select Project Folder</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="authorName">Your Name <span class="optional-tag">Optional</span></label>
+        <input id="authorName" type="text" placeholder="Ghost" />
+      </div>
+
+      <div class="field">
+        <label for="authorEmail">Your Email <span class="optional-tag">Optional</span></label>
+        <input id="authorEmail" type="text" placeholder="ghost@ghostgit.local" />
+      </div>
+
+      <div class="field">
+        <label for="username">GitHub Username <span class="optional-tag">Optional</span></label>
+        <input id="username" type="text" placeholder="ghost" />
+      </div>
+
+      <div class="field">
+        <label for="pat">Personal Access Token <span class="required-tag">Required</span></label>
+        <input id="pat" type="password" placeholder="ghp_xxxxxxxxxxxxxxxx" />
+        <a id="genTokenLink" href="#" class="token-link">Generate a token →</a>
+      </div>
+
+      <button id="continueBtn" class="btn primary full">Continue</button>
+      <button id="previewNoRepoBtn" class="btn ghost full tiny-link">Preview: No Git Initialized screen</button>
+    </div>
+  </section>
+
+  <!-- MAIN WORKSPACE SCREEN -->
+  <section id="workspace" class="screen hidden">
+    <header class="topbar">
+      <div class="topbar-left">
+        <span id="repoPathLabel" class="repo-path mono">~/no-folder</span>
+        <select id="branchSelect" class="branch-select mono"></select>
+        <span id="modeBadge" class="mode-badge">Demo</span>
+      </div>
+      <div class="topbar-right">
+        <button id="fetchBtn" class="btn ghost">Fetch</button>
+        <button id="pullBtn" class="btn ghost">Pull</button>
+        <button id="pushBtn" class="btn primary">Push</button>
+        <button id="closeSessionBtn" class="btn danger">Close Session</button>
+      </div>
+    </header>
+
+    <main class="workspace-body">
+      <aside class="panel changed-files">
+        <div class="panel-header">
+          <h2>Changed Files</h2>
+          <div class="select-buttons">
+            <button id="selectAllBtn" class="btn tiny">All</button>
+            <button id="selectNoneBtn" class="btn tiny">None</button>
+          </div>
+        </div>
+        <ul id="fileList" class="file-list"></ul>
+      </aside>
+
+      <section class="panel diff-panel">
+        <h2 id="diffHeading">Diff</h2>
+        <div id="diffEmpty" class="diff-empty">Select a file to see its changes.</div>
+        <pre id="diffView" class="diff-view mono hidden"></pre>
+      </section>
+
+      <section class="panel commit-panel">
+        <h2>Commit</h2>
+        <input id="commitSummary" type="text" placeholder="Summary (required)" class="commit-summary" />
+        <textarea id="commitMessage" placeholder="Description (optional)" rows="3"></textarea>
+        <button id="commitBtn" class="btn primary full">Commit</button>
+
+        <h2 class="history-heading">Commit History</h2>
+        <ul id="commitHistory" class="commit-history"></ul>
+      </section>
+    </main>
+  </section>
+
+  <!-- NO GIT INITIALIZED SCREEN -->
+  <section id="noRepo" class="screen hidden">
+    <div class="onboarding-card no-repo-card">
+      <h1 class="brand">👻 Ghostgit</h1>
+      <p class="subtitle">This folder isn't a git repository yet.</p>
+      <p id="noRepoPath" class="repo-path mono no-repo-path"></p>
+      <button id="initRepoBtn" class="btn primary full">Initialize Repository</button>
+      <button id="backToOnboardingBtn" class="btn secondary full">Choose a Different Folder</button>
+    </div>
+  </section>
+
+  <!-- TOAST -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
