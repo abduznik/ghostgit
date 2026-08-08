@@ -414,11 +414,68 @@ fn real_fetch(repo_path: String, pat: String) -> Result<String, String> {
     Ok("Fetched from origin".into())
 }
 
-// TODO: replace with real git2-rs pull / merge — needs conflict-resolution
-// UI before it's safe to attempt a real merge, so this stays mocked.
+// Real: fetches from origin over HTTPS using the PAT, then fast-forwards the
+// current branch to the fetched remote-tracking ref. Only fast-forwards —
+// if local and remote history have diverged, this returns an error instead
+// of attempting a merge, since there's no conflict-resolution UI yet.
 #[tauri::command]
-fn mock_pull() -> Result<String, String> {
-    Ok("Pulled (mock)".into())
+fn real_pull(repo_path: String, pat: String) -> Result<String, String> {
+    if pat.trim().is_empty() {
+        return Err("No PAT available for pull".into());
+    }
+    let repo = Repository::open(Path::new(&repo_path)).map_err(|e| e.to_string())?;
+    let mut remote = repo
+        .find_remote("origin")
+        .map_err(|_| "No remote 'origin' configured".to_string())?;
+
+    let head = repo.head().map_err(|e| e.to_string())?;
+    let branch_name = head
+        .shorthand()
+        .ok_or("HEAD is not a valid branch")?
+        .to_string();
+
+    let mut fetch_opts = git2::FetchOptions::new();
+    fetch_opts.remote_callbacks(make_remote_callbacks(&pat));
+    remote
+        .fetch(&[&branch_name], Some(&mut fetch_opts), None)
+        .map_err(|e| format!("Fetch failed ({:?}): {}", e.class(), e.message()))?;
+
+    let remote_ref_name = format!("refs/remotes/origin/{branch_name}");
+    let remote_ref = repo.find_reference(&remote_ref_name).map_err(|_| {
+        format!("Remote branch 'origin/{branch_name}' does not exist")
+    })?;
+    let remote_commit = repo
+        .reference_to_annotated_commit(&remote_ref)
+        .map_err(|e| e.to_string())?;
+
+    let (merge_analysis, _) = repo
+        .merge_analysis(&[&remote_commit])
+        .map_err(|e| e.to_string())?;
+
+    if merge_analysis.is_up_to_date() {
+        return Ok(format!("Already up to date with origin/{branch_name}"));
+    }
+
+    if !merge_analysis.is_fast_forward() {
+        return Err(
+            "Local and remote branches have diverged — merge manually before pulling".into(),
+        );
+    }
+
+    let local_refname = format!("refs/heads/{branch_name}");
+    let mut local_ref = repo.find_reference(&local_refname).map_err(|e| e.to_string())?;
+    let target_oid = remote_commit.id();
+
+    local_ref
+        .set_target(target_oid, "ghostgit: fast-forward pull")
+        .map_err(|e| e.to_string())?;
+    repo.set_head(&local_refname).map_err(|e| e.to_string())?;
+    repo.checkout_head(Some(
+        git2::build::CheckoutBuilder::new().force(),
+    ))
+    .map_err(|e| e.to_string())?;
+
+    Ok(format!("Pulled — fast-forwarded {branch_name} to origin"))
 }
 
 // Real check: hits GitHub's REST API with the given PAT and reports whether
@@ -466,7 +523,7 @@ pub fn run() {
             set_remote,
             real_push,
             real_fetch,
-            mock_pull,
+            real_pull,
             check_pat,
         ])
         .setup(|_app| {
@@ -671,5 +728,128 @@ mod tests {
         assert!(has_remote(path).unwrap());
 
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Builds an "origin" repo with one commit on its default branch, and a
+    // second repo cloned from it with 'origin' pointed at origin's local
+    // path. Local file-path remotes don't invoke the credentials callback,
+    // so real_pull's fetch+merge logic can be exercised without a network —
+    // only the (non-empty) PAT string is required to pass the empty check.
+    fn make_origin_and_clone() -> (std::path::PathBuf, std::path::PathBuf, String) {
+        let origin_dir = temp_repo_path();
+        let origin_path = origin_dir.to_str().unwrap().to_string();
+        init_repo(origin_path.clone()).unwrap();
+        fs::write(origin_dir.join("a.txt"), "a\n").unwrap();
+        real_commit(
+            origin_path.clone(),
+            "Origin Author".to_string(),
+            "origin@example.com".to_string(),
+            "Initial commit".to_string(),
+            vec!["a.txt".to_string()],
+        )
+        .unwrap();
+        let branch_name = get_current_branch(origin_path.clone()).unwrap();
+
+        let clone_dir = temp_repo_path();
+        Repository::clone(&origin_path, &clone_dir).expect("clone should succeed");
+
+        (origin_dir, clone_dir, branch_name)
+    }
+
+    #[test]
+    fn pull_fast_forwards_when_origin_has_new_commits() {
+        let _guard = COMMIT_TEST_LOCK.lock().unwrap();
+        let (origin_dir, clone_dir, _branch) = make_origin_and_clone();
+        let origin_path = origin_dir.to_str().unwrap().to_string();
+        let clone_path = clone_dir.to_str().unwrap().to_string();
+
+        // Advance origin with a second commit the clone doesn't have yet.
+        fs::write(origin_dir.join("b.txt"), "b\n").unwrap();
+        real_commit(
+            origin_path,
+            "Origin Author".to_string(),
+            "origin@example.com".to_string(),
+            "Second commit".to_string(),
+            vec!["b.txt".to_string()],
+        )
+        .unwrap();
+
+        let history_before = get_commit_history(clone_path.clone()).unwrap();
+        assert_eq!(history_before.len(), 1);
+
+        let msg = real_pull(clone_path.clone(), "dummy-pat".to_string()).unwrap();
+        assert!(msg.contains("fast-forwarded"), "unexpected message: {msg}");
+
+        let history_after = get_commit_history(clone_path.clone()).unwrap();
+        assert_eq!(history_after.len(), 2);
+        assert!(clone_dir.join("b.txt").exists());
+
+        fs::remove_dir_all(&origin_dir).unwrap();
+        fs::remove_dir_all(&clone_dir).unwrap();
+    }
+
+    #[test]
+    fn pull_reports_already_up_to_date() {
+        let _guard = COMMIT_TEST_LOCK.lock().unwrap();
+        let (origin_dir, clone_dir, _branch) = make_origin_and_clone();
+        let clone_path = clone_dir.to_str().unwrap().to_string();
+
+        let msg = real_pull(clone_path, "dummy-pat".to_string()).unwrap();
+        assert!(msg.contains("Already up to date"), "unexpected message: {msg}");
+
+        fs::remove_dir_all(&origin_dir).unwrap();
+        fs::remove_dir_all(&clone_dir).unwrap();
+    }
+
+    #[test]
+    fn pull_rejects_diverged_history() {
+        let _guard = COMMIT_TEST_LOCK.lock().unwrap();
+        let (origin_dir, clone_dir, _branch) = make_origin_and_clone();
+        let origin_path = origin_dir.to_str().unwrap().to_string();
+        let clone_path = clone_dir.to_str().unwrap().to_string();
+
+        // Diverge both sides: origin gets a commit, and the clone gets an
+        // unrelated local commit of its own, so neither is an ancestor of
+        // the other and a fast-forward is impossible.
+        fs::write(origin_dir.join("b.txt"), "b\n").unwrap();
+        real_commit(
+            origin_path,
+            "Origin Author".to_string(),
+            "origin@example.com".to_string(),
+            "Origin-side commit".to_string(),
+            vec!["b.txt".to_string()],
+        )
+        .unwrap();
+
+        fs::write(clone_dir.join("c.txt"), "c\n").unwrap();
+        real_commit(
+            clone_path.clone(),
+            "Clone Author".to_string(),
+            "clone@example.com".to_string(),
+            "Clone-side commit".to_string(),
+            vec!["c.txt".to_string()],
+        )
+        .unwrap();
+
+        let result = real_pull(clone_path, "dummy-pat".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("diverged"));
+
+        fs::remove_dir_all(&origin_dir).unwrap();
+        fs::remove_dir_all(&clone_dir).unwrap();
+    }
+
+    #[test]
+    fn pull_requires_non_empty_pat() {
+        let _guard = COMMIT_TEST_LOCK.lock().unwrap();
+        let (origin_dir, clone_dir, _branch) = make_origin_and_clone();
+        let clone_path = clone_dir.to_str().unwrap().to_string();
+
+        let result = real_pull(clone_path, "".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("PAT"));
+
+        fs::remove_dir_all(&origin_dir).unwrap();
+        fs::remove_dir_all(&clone_dir).unwrap();
     }
 }

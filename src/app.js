@@ -680,9 +680,25 @@ fetchBtn.addEventListener("click", async () => {
 });
 
 pullBtn.addEventListener("click", async () => {
-  const msg = await invoke("mock_pull");
-  playSound(pullSound);
-  showToast(msg);
+  if (!currentRepoPath) {
+    playSound(pullSound);
+    showToast("Pulled (mock)");
+    return;
+  }
+  try {
+    const msg = await invoke("real_pull", {
+      repoPath: currentRepoPath,
+      pat: currentSession.pat,
+    });
+    playSound(pullSound);
+    showToast(msg, "success");
+    await refreshFileList();
+    await refreshCommitHistory();
+    await populateBranches();
+  } catch (err) {
+    console.error("Pull failed:", err);
+    showToast(`Error: ${err}`, "error");
+  }
 });
 
 pushBtn.addEventListener("click", async () => {
