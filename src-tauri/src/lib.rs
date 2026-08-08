@@ -441,9 +441,9 @@ fn real_pull(repo_path: String, pat: String) -> Result<String, String> {
         .map_err(|e| format!("Fetch failed ({:?}): {}", e.class(), e.message()))?;
 
     let remote_ref_name = format!("refs/remotes/origin/{branch_name}");
-    let remote_ref = repo.find_reference(&remote_ref_name).map_err(|_| {
-        format!("Remote branch 'origin/{branch_name}' does not exist")
-    })?;
+    let remote_ref = repo
+        .find_reference(&remote_ref_name)
+        .map_err(|_| format!("Remote branch 'origin/{branch_name}' does not exist"))?;
     let remote_commit = repo
         .reference_to_annotated_commit(&remote_ref)
         .map_err(|e| e.to_string())?;
@@ -463,17 +463,17 @@ fn real_pull(repo_path: String, pat: String) -> Result<String, String> {
     }
 
     let local_refname = format!("refs/heads/{branch_name}");
-    let mut local_ref = repo.find_reference(&local_refname).map_err(|e| e.to_string())?;
+    let mut local_ref = repo
+        .find_reference(&local_refname)
+        .map_err(|e| e.to_string())?;
     let target_oid = remote_commit.id();
 
     local_ref
         .set_target(target_oid, "ghostgit: fast-forward pull")
         .map_err(|e| e.to_string())?;
     repo.set_head(&local_refname).map_err(|e| e.to_string())?;
-    repo.checkout_head(Some(
-        git2::build::CheckoutBuilder::new().force(),
-    ))
-    .map_err(|e| e.to_string())?;
+    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+        .map_err(|e| e.to_string())?;
 
     Ok(format!("Pulled — fast-forwarded {branch_name} to origin"))
 }
@@ -795,7 +795,10 @@ mod tests {
         let clone_path = clone_dir.to_str().unwrap().to_string();
 
         let msg = real_pull(clone_path, "dummy-pat".to_string()).unwrap();
-        assert!(msg.contains("Already up to date"), "unexpected message: {msg}");
+        assert!(
+            msg.contains("Already up to date"),
+            "unexpected message: {msg}"
+        );
 
         fs::remove_dir_all(&origin_dir).unwrap();
         fs::remove_dir_all(&clone_dir).unwrap();
