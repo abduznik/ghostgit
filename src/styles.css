@@ -44,11 +44,50 @@ html, body {
 /* ---------- Onboarding ---------- */
 
 #onboarding {
+  position: relative;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
+}
+
+.floating-logos {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.floating-logo {
+  position: absolute;
+  left: var(--sx, 0vw);
+  top: var(--sy, 100vh);
+  width: var(--size, 90px);
+  height: var(--size, 90px);
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: float-diagonal var(--dur, 24s) linear infinite;
+}
+
+@keyframes float-diagonal {
+  0% {
+    transform: translate(0, 0) rotate(0deg);
+    opacity: 0;
+  }
+  6%, 94% {
+    opacity: 0.12;
+  }
+  100% {
+    transform: translate(
+      calc(var(--ex, 100vw) - var(--sx, 0vw)),
+      calc(var(--ey, -30vh) - var(--sy, 100vh))
+    ) rotate(25deg);
+    opacity: 0;
+  }
 }
 
 .onboarding-card {
+  position: relative;
+  z-index: 1;
   width: 420px;
   max-width: 90vw;
   padding: 32px;

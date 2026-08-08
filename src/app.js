@@ -2,6 +2,71 @@ const { invoke } = window.__TAURI__.core;
 const { open } = window.__TAURI__.dialog;
 const { open: openUrl } = window.__TAURI__.shell;
 
+// ---------- Floating logos (onboarding background) ----------
+
+(function spawnFloatingLogos() {
+  const container = document.getElementById("floatingLogos");
+  if (!container) return;
+  const COUNT = 44;
+
+  // Every logo travels the exact same fixed direction: diagonally from the
+  // bottom-left area toward the top-right, off-screen. Each one just starts at a
+  // random point along the left edge or the bottom edge, so spawns are spread
+  // across the whole left+bottom border rather than clumped at the corner.
+  // Distance to travel varies, so some finish fast and some slow, but the
+  // direction (the slope of the line) is identical for all of them.
+  const DIAG = 140; // vw/vh units traveled from start to (off-screen) end
+
+  // Represent each start point in the same 0..200 coordinate running along the
+  // left edge (bottom to top) then continuing along the bottom edge (left to
+  // right), so "distance apart" along the border is a single comparable number.
+  const BORDER_LEN = 200; // 100 for left edge + 100 for bottom edge
+  const MIN_GAP = BORDER_LEN / COUNT / 1.3;
+
+  const positions = [];
+  for (let i = 0; i < COUNT; i++) {
+    let p;
+    let attempts = 0;
+    do {
+      p = Math.random() * BORDER_LEN;
+      attempts++;
+    } while (positions.some((q) => Math.abs(q - p) < MIN_GAP) && attempts < 40);
+    positions.push(p);
+  }
+
+  const frag = document.createDocumentFragment();
+  positions.forEach((p) => {
+    const img = document.createElement("img");
+    img.className = "floating-logo";
+    img.src = "assets/logo.png";
+    img.alt = "";
+
+    let startX, startY;
+    if (p < 100) {
+      // Left edge, bottom (vh=100) to top (vh=0).
+      startX = -10;
+      startY = 100 - p;
+    } else {
+      // Bottom edge, left (vw=0) to right (vw=100).
+      startX = p - 100;
+      startY = 110;
+    }
+    const endX = startX + DIAG;
+    const endY = startY - DIAG;
+
+    const size = Math.round(40 + Math.random() * 170);
+    const dur = 12 + Math.random() * 30; // seconds to cross: some fast, some slow
+    // Random start phase so instances are continuously in flight, not synchronized.
+    const delay = -(Math.random() * dur).toFixed(1);
+    img.style.cssText =
+      `--sx:${startX.toFixed(1)}vw; --sy:${startY.toFixed(1)}vh; ` +
+      `--ex:${endX.toFixed(1)}vw; --ey:${endY.toFixed(1)}vh; ` +
+      `--size:${size}px; --dur:${dur.toFixed(1)}s; animation-delay:${delay}s;`;
+    frag.appendChild(img);
+  });
+  container.appendChild(frag);
+})();
+
 // ---------- Elements ----------
 
 const onboardingScreen = document.getElementById("onboarding");
