@@ -1,10 +1,50 @@
-use git2::{Repository, StatusOptions};
+use git2::{ErrorClass, ErrorCode, Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
 #[cfg(debug_assertions)]
 use tauri::Manager;
 use tauri::State;
+
+// Windows holds an exclusive lock on a file while another process has it
+// open (editor, build watcher, antivirus scan), which makes libgit2's file
+// reads/writes fail transiently with a "sharing violation" style error.
+// These locks are usually released within milliseconds, so retrying a few
+// times with a short backoff avoids forcing the user to close whatever has
+// the file open just to stage or discard it.
+const LOCK_RETRY_ATTEMPTS: u32 = 5;
+const LOCK_RETRY_DELAY: Duration = Duration::from_millis(120);
+
+fn is_transient_lock_error(err: &git2::Error) -> bool {
+    // libgit2 reports OS-level I/O failures (including Windows sharing
+    // violations) as ErrorClass::Os with ErrorCode::GenericError.
+    err.class() == ErrorClass::Os && err.code() == ErrorCode::GenericError
+}
+
+fn retry_on_lock<T>(mut f: impl FnMut() -> Result<T, git2::Error>) -> Result<T, git2::Error> {
+    let mut attempt = 0;
+    loop {
+        match f() {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt + 1 < LOCK_RETRY_ATTEMPTS && is_transient_lock_error(&e) => {
+                attempt += 1;
+                std::thread::sleep(LOCK_RETRY_DELAY);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+// Friendlier message for the case retries exhaust on what looks like a
+// lock — the raw libgit2/OS message is often cryptic on Windows.
+fn describe_lock_error(path: &str, err: &git2::Error) -> String {
+    if is_transient_lock_error(err) {
+        format!("'{path}' is locked by another program — close it and try again")
+    } else {
+        err.to_string()
+    }
+}
 
 // In-memory session state. Nothing here ever touches disk except via the
 // dialog plugin's folder picker and the real git2-rs calls below.
@@ -167,18 +207,39 @@ fn discard_file(repo_path: String, path: String) -> Result<(), String> {
         .unwrap_or(false);
 
     if is_tracked {
-        let mut checkout = git2::build::CheckoutBuilder::new();
-        checkout.path(&path).force();
-        repo.checkout_head(Some(&mut checkout))
-            .map_err(|e| e.to_string())?;
+        retry_on_lock(|| {
+            let mut checkout = git2::build::CheckoutBuilder::new();
+            checkout.path(&path).force();
+            repo.checkout_head(Some(&mut checkout))
+        })
+        .map_err(|e| describe_lock_error(&path, &e))?;
     } else {
         let full_path = Path::new(&repo_path).join(&path);
         if full_path.exists() {
-            std::fs::remove_file(&full_path).map_err(|e| e.to_string())?;
+            retry_remove_file(&full_path).map_err(|e| {
+                format!("'{path}' is locked by another program — close it and try again: {e}")
+            })?;
         }
     }
 
     Ok(())
+}
+
+// std::fs errors don't carry libgit2's ErrorClass/ErrorCode, so sharing
+// violations here are detected by raw_os_error instead (Windows error 32,
+// ERROR_SHARING_VIOLATION).
+fn retry_remove_file(path: &Path) -> std::io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt + 1 < LOCK_RETRY_ATTEMPTS && e.raw_os_error() == Some(32) => {
+                attempt += 1;
+                std::thread::sleep(LOCK_RETRY_DELAY);
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 // Real: lists local branches via git2::Repository::branches
@@ -212,7 +273,8 @@ fn switch_branch(repo_path: String, branch: String) -> Result<(), String> {
     let repo = Repository::open(Path::new(&repo_path)).map_err(|e| e.to_string())?;
     let refname = format!("refs/heads/{}", branch);
     let obj = repo.revparse_single(&refname).map_err(|e| e.to_string())?;
-    repo.checkout_tree(&obj, None).map_err(|e| e.to_string())?;
+    retry_on_lock(|| repo.checkout_tree(&obj, None))
+        .map_err(|e| describe_lock_error(&branch, &e))?;
     repo.set_head(&refname).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -237,12 +299,22 @@ fn real_commit(
     if paths.is_empty() {
         return Err("No files staged for commit".into());
     }
+    // index.add_path() stages whatever path it's given, ignore rules or
+    // not — unlike `git add` from the CLI, which refuses an ignored path
+    // unless forced. Mirror that refusal here so a stale UI list or a
+    // hand-typed path can never sneak an ignored file into a commit.
     for path in &paths {
-        index
-            .add_path(Path::new(path))
-            .map_err(|e| format!("Failed to stage {path}: {e}"))?;
+        if repo.is_path_ignored(Path::new(path)).unwrap_or(false) {
+            return Err(format!(
+                "'{path}' is excluded by .gitignore and cannot be committed"
+            ));
+        }
     }
-    index.write().map_err(|e| e.to_string())?;
+    for path in &paths {
+        retry_on_lock(|| index.add_path(Path::new(path)))
+            .map_err(|e| format!("Failed to stage {path}: {}", describe_lock_error(path, &e)))?;
+    }
+    retry_on_lock(|| index.write()).map_err(|e| describe_lock_error(&paths.join(", "), &e))?;
 
     let tree_id = index.write_tree().map_err(|e| e.to_string())?;
     let tree = repo.find_tree(tree_id).map_err(|e| e.to_string())?;
@@ -472,8 +544,8 @@ fn real_pull(repo_path: String, pat: String) -> Result<String, String> {
         .set_target(target_oid, "ghostgit: fast-forward pull")
         .map_err(|e| e.to_string())?;
     repo.set_head(&local_refname).map_err(|e| e.to_string())?;
-    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
-        .map_err(|e| e.to_string())?;
+    retry_on_lock(|| repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force())))
+        .map_err(|e| describe_lock_error(&branch_name, &e))?;
 
     Ok(format!("Pulled — fast-forwarded {branch_name} to origin"))
 }
@@ -854,5 +926,133 @@ mod tests {
 
         fs::remove_dir_all(&origin_dir).unwrap();
         fs::remove_dir_all(&clone_dir).unwrap();
+    }
+
+    #[test]
+    fn retry_on_lock_recovers_from_transient_failure() {
+        let mut calls = 0;
+        let result: Result<(), git2::Error> = retry_on_lock(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(git2::Error::new(
+                    ErrorCode::GenericError,
+                    ErrorClass::Os,
+                    "sharing violation",
+                ))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_ok());
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn retry_on_lock_gives_up_on_non_lock_errors() {
+        let mut calls = 0;
+        let result: Result<(), git2::Error> = retry_on_lock(|| {
+            calls += 1;
+            Err(git2::Error::new(
+                ErrorCode::NotFound,
+                ErrorClass::Reference,
+                "not found",
+            ))
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, 1, "non-lock errors must not be retried");
+    }
+
+    // Commits a file that's genuinely held open (write lock, no read-sharing)
+    // by another thread for part of the retry window, proving real_commit
+    // recovers from a real Windows sharing violation without needing that
+    // other handle's owner to close anything.
+    #[test]
+    #[cfg(windows)]
+    fn commit_succeeds_despite_transient_file_lock() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let _guard = COMMIT_TEST_LOCK.lock().unwrap();
+        let dir = temp_repo_path();
+        let path = dir.to_str().unwrap().to_string();
+        init_repo(path.clone()).unwrap();
+
+        let file_path = dir.join("locked.txt");
+        fs::write(&file_path, "before\n").unwrap();
+
+        // First commit so the file is tracked (index reads still need it
+        // readable even when untracked, but this mirrors the real "editing
+        // a tracked file" scenario the user hit).
+        real_commit(
+            path.clone(),
+            "Test Author".to_string(),
+            "test@example.com".to_string(),
+            "Initial commit".to_string(),
+            vec!["locked.txt".to_string()],
+        )
+        .unwrap();
+
+        fs::write(&file_path, "after\n").unwrap();
+
+        // Open with FILE_SHARE_READ but not FILE_SHARE_WRITE/DELETE, from a
+        // background thread, for a short window — long enough to make the
+        // first commit attempt race against it, short enough that the
+        // retry loop's backoff window covers it.
+        let file_path_for_thread = file_path.clone();
+        let handle = std::thread::spawn(move || {
+            let _f = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(0x00000001) // FILE_SHARE_READ only
+                .open(&file_path_for_thread)
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        let entry = real_commit(
+            path.clone(),
+            "Test Author".to_string(),
+            "test@example.com".to_string(),
+            "Second commit while file briefly locked".to_string(),
+            vec!["locked.txt".to_string()],
+        );
+        handle.join().unwrap();
+
+        assert!(
+            entry.is_ok(),
+            "commit should recover from a transient lock via retry: {:?}",
+            entry.err()
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn commit_refuses_to_stage_gitignored_path() {
+        let _guard = COMMIT_TEST_LOCK.lock().unwrap();
+        let dir = temp_repo_path();
+        let path = dir.to_str().unwrap().to_string();
+        init_repo(path.clone()).unwrap();
+        fs::write(dir.join(".gitignore"), "ignored.txt\n").unwrap();
+        fs::write(dir.join("ignored.txt"), "secret\n").unwrap();
+
+        let files = get_changed_files(path.clone()).unwrap();
+        assert!(
+            files.iter().all(|f| f.path != "ignored.txt"),
+            "ignored.txt should not appear in changed files: {:?}",
+            files
+        );
+
+        let result = real_commit(
+            path,
+            "Test Author".to_string(),
+            "test@example.com".to_string(),
+            "Try to commit ignored file".to_string(),
+            vec!["ignored.txt".to_string()],
+        );
+        assert!(result.is_err(), "committing an ignored path should fail");
+        assert!(result.unwrap_err().contains("gitignore"));
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
