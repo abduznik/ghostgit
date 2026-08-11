@@ -1053,10 +1053,7 @@ mod tests {
     #[test]
     fn clone_requires_non_empty_url() {
         let mut dest_dir = std::env::temp_dir();
-        dest_dir.push(format!(
-            "ghostgit-clone-empty-url-{}",
-            std::process::id()
-        ));
+        dest_dir.push(format!("ghostgit-clone-empty-url-{}", std::process::id()));
         let dest_path = dest_dir.to_str().unwrap().to_string();
         let result = real_clone("".to_string(), dest_path, "dummy-pat".to_string());
         assert!(result.is_err());
