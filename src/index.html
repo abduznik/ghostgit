@@ -15,28 +15,56 @@
       <h1 class="brand">Ghostgit</h1>
       <p class="subtitle">A minimal, incognito-style Git client.</p>
 
-      <div class="field">
-        <label>Project Folder <span class="required-tag">Required</span></label>
-        <div class="row">
-          <input id="repoPath" type="text" placeholder="No folder selected" readonly />
-          <button id="pickFolderBtn" class="btn secondary">Select Project Folder</button>
+      <div class="source-tabs" role="tablist">
+        <button id="tabOpenFolder" class="source-tab active" role="tab" aria-selected="true">Open Folder</button>
+        <button id="tabClone" class="source-tab" role="tab" aria-selected="false">Clone Repository</button>
+      </div>
+
+      <div id="openFolderPane" class="source-pane">
+        <div class="field">
+          <label>Project Folder <span class="required-tag">Required</span></label>
+          <div class="row">
+            <input id="repoPath" type="text" placeholder="No folder selected" readonly />
+            <button id="pickFolderBtn" class="btn secondary">Select Project Folder</button>
+          </div>
         </div>
       </div>
 
-      <div class="field">
-        <label for="authorName">Your Name <span class="optional-tag">Optional</span></label>
-        <input id="authorName" type="text" placeholder="Ghost" />
+      <div id="clonePane" class="source-pane hidden">
+        <div class="field">
+          <label for="cloneUrl">Repository URL <span class="required-tag">Required</span></label>
+          <input id="cloneUrl" type="text" placeholder="https://github.com/user/repo.git" class="mono" />
+          <button id="browseMyReposBtn" class="btn ghost full tiny-link hidden">Browse my repositories →</button>
+          <select id="myReposSelect" class="mono hidden"></select>
+        </div>
+        <div class="field">
+          <label>Clone Into <span class="required-tag">Required</span></label>
+          <div class="row">
+            <input id="cloneDestPath" type="text" placeholder="No destination folder selected" readonly />
+            <button id="pickCloneDestBtn" class="btn secondary">Select Destination</button>
+          </div>
+        </div>
+        <button id="cloneBtn" class="btn primary full">Clone Repository</button>
+        <p class="clone-hint">Uses the Personal Access Token below — enter it first.</p>
       </div>
 
-      <div class="field">
-        <label for="authorEmail">Your Email <span class="optional-tag">Optional</span></label>
-        <input id="authorEmail" type="text" placeholder="ghost@ghostgit.local" />
-      </div>
+      <details class="identity-section">
+        <summary>Identity <span class="optional-tag">Optional</span></summary>
+        <div class="field">
+          <label for="authorName">Your Name</label>
+          <input id="authorName" type="text" placeholder="Ghost" />
+        </div>
 
-      <div class="field">
-        <label for="username">GitHub Username <span class="optional-tag">Optional</span></label>
-        <input id="username" type="text" placeholder="ghost" />
-      </div>
+        <div class="field">
+          <label for="authorEmail">Your Email</label>
+          <input id="authorEmail" type="text" placeholder="ghost@ghostgit.local" />
+        </div>
+
+        <div class="field">
+          <label for="username">GitHub Username</label>
+          <input id="username" type="text" placeholder="ghost" />
+        </div>
+      </details>
 
       <div class="field">
         <label for="pat">Personal Access Token <span class="required-tag">Required</span></label>

@@ -81,6 +81,16 @@ const usernameInput = document.getElementById("username");
 const patInput = document.getElementById("pat");
 const genTokenLink = document.getElementById("genTokenLink");
 const continueBtn = document.getElementById("continueBtn");
+const tabOpenFolder = document.getElementById("tabOpenFolder");
+const tabClone = document.getElementById("tabClone");
+const openFolderPane = document.getElementById("openFolderPane");
+const clonePane = document.getElementById("clonePane");
+const cloneUrlInput = document.getElementById("cloneUrl");
+const cloneDestPathInput = document.getElementById("cloneDestPath");
+const pickCloneDestBtn = document.getElementById("pickCloneDestBtn");
+const cloneBtn = document.getElementById("cloneBtn");
+const browseMyReposBtn = document.getElementById("browseMyReposBtn");
+const myReposSelect = document.getElementById("myReposSelect");
 
 const repoPathLabel = document.getElementById("repoPathLabel");
 const branchSelect = document.getElementById("branchSelect");
@@ -213,6 +223,117 @@ pickFolderBtn.addEventListener("click", async () => {
   const selected = await open({ directory: true, multiple: false });
   if (selected) {
     repoPathInput.value = selected;
+  }
+});
+
+function setSourceTab(tab) {
+  const isClone = tab === "clone";
+  tabOpenFolder.classList.toggle("active", !isClone);
+  tabClone.classList.toggle("active", isClone);
+  tabOpenFolder.setAttribute("aria-selected", String(!isClone));
+  tabClone.setAttribute("aria-selected", String(isClone));
+  openFolderPane.classList.toggle("hidden", isClone);
+  clonePane.classList.toggle("hidden", !isClone);
+  updateBrowseReposVisibility();
+}
+
+tabOpenFolder.addEventListener("click", () => setSourceTab("folder"));
+tabClone.addEventListener("click", () => setSourceTab("clone"));
+
+// Offering "browse my repos" only makes sense once there's a PAT to call
+// the GitHub API with — otherwise it's just a button that always errors.
+function updateBrowseReposVisibility() {
+  const hasPat = Boolean(patInput.value.trim());
+  const cloneOpen = !clonePane.classList.contains("hidden");
+  browseMyReposBtn.classList.toggle("hidden", !(hasPat && cloneOpen));
+}
+
+patInput.addEventListener("input", updateBrowseReposVisibility);
+
+browseMyReposBtn.addEventListener("click", async () => {
+  const pat = patInput.value.trim();
+  if (!pat) {
+    showToast("Enter a Personal Access Token first", "error");
+    return;
+  }
+  browseMyReposBtn.disabled = true;
+  browseMyReposBtn.textContent = "Loading repositories…";
+  try {
+    const repos = await invoke("list_my_repos", { pat });
+    if (repos.length === 0) {
+      showToast("No repositories found for this account", "error");
+      return;
+    }
+    myReposSelect.innerHTML = "";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = `Select a repository (${repos.length} found)…`;
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    myReposSelect.appendChild(placeholder);
+    repos.forEach((repo) => {
+      const option = document.createElement("option");
+      option.value = repo.clone_url;
+      option.textContent = repo.private ? `🔒 ${repo.full_name}` : repo.full_name;
+      myReposSelect.appendChild(option);
+    });
+    myReposSelect.classList.remove("hidden");
+  } catch (err) {
+    console.error("Failed to list repositories:", err);
+    showToast(`Error: ${err}`, "error");
+  } finally {
+    browseMyReposBtn.disabled = false;
+    browseMyReposBtn.textContent = "Browse my repositories →";
+  }
+});
+
+myReposSelect.addEventListener("change", () => {
+  if (myReposSelect.value) {
+    cloneUrlInput.value = myReposSelect.value;
+  }
+});
+
+pickCloneDestBtn.addEventListener("click", async () => {
+  const selected = await open({ directory: true, multiple: false });
+  if (selected) {
+    cloneDestPathInput.value = selected;
+  }
+});
+
+cloneBtn.addEventListener("click", async () => {
+  const url = cloneUrlInput.value.trim();
+  const destPath = cloneDestPathInput.value.trim();
+  const pat = patInput.value.trim();
+
+  if (!url) {
+    showToast("Enter a repository URL to clone", "error");
+    return;
+  }
+  if (!destPath) {
+    showToast("Select a destination folder first", "error");
+    return;
+  }
+  if (!pat) {
+    showToast("Enter a Personal Access Token first", "error");
+    return;
+  }
+
+  cloneBtn.disabled = true;
+  cloneBtn.textContent = "Cloning…";
+  try {
+    await invoke("real_clone", { url, destPath, pat });
+    showToast("Repository cloned!", "success");
+    repoPathInput.value = destPath;
+    setSourceTab("folder");
+    cloneUrlInput.value = "";
+    cloneDestPathInput.value = "";
+    myReposSelect.classList.add("hidden");
+  } catch (err) {
+    console.error("Clone failed:", err);
+    showToast(`Error: ${err}`, "error");
+  } finally {
+    cloneBtn.disabled = false;
+    cloneBtn.textContent = "Clone Repository";
   }
 });
 

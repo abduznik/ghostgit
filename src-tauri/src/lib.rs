@@ -463,6 +463,32 @@ fn real_push(repo_path: String, pat: String) -> Result<String, String> {
     Ok(format!("Pushed {branch_name} to origin"))
 }
 
+// Real: clones a remote repository over HTTPS using the PAT into
+// dest_path, and sets it as the working repository. dest_path must not
+// already exist (or must be empty) — git2 refuses to clone into a
+// non-empty directory.
+#[tauri::command]
+fn real_clone(url: String, dest_path: String, pat: String) -> Result<(), String> {
+    if pat.trim().is_empty() {
+        return Err("No PAT available for clone".into());
+    }
+    if url.trim().is_empty() {
+        return Err("Enter a repository URL to clone".into());
+    }
+
+    let mut fetch_opts = git2::FetchOptions::new();
+    fetch_opts.remote_callbacks(make_remote_callbacks(&pat));
+
+    let mut builder = git2::build::RepoBuilder::new();
+    builder.fetch_options(fetch_opts);
+
+    builder
+        .clone(&url, Path::new(&dest_path))
+        .map_err(|e| format!("Clone failed ({:?}): {}", e.class(), e.message()))?;
+
+    Ok(())
+}
+
 // Real: fetches from origin over HTTPS using the PAT. Only updates remote
 // tracking refs — never touches the working tree, so it's safe to run
 // without any merge/conflict handling.
@@ -571,6 +597,58 @@ async fn check_pat(pat: String) -> Result<bool, String> {
     Ok(resp.status().is_success())
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RemoteRepo {
+    pub name: String,
+    pub full_name: String,
+    pub clone_url: String,
+    pub private: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubRepoResponse {
+    name: String,
+    full_name: String,
+    clone_url: String,
+    private: bool,
+}
+
+// Real: lists the authenticated user's repositories (owned + collaborator)
+// via GitHub's REST API, most recently pushed first, for the "clone one of
+// my own repos" picker.
+#[tauri::command]
+async fn list_my_repos(pat: String) -> Result<Vec<RemoteRepo>, String> {
+    if pat.trim().is_empty() {
+        return Err("No PAT provided".into());
+    }
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://api.github.com/user/repos?sort=pushed&per_page=100&affiliation=owner,collaborator")
+        .header("Authorization", format!("Bearer {}", pat))
+        .header("User-Agent", "ghostgit")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API error: {}", resp.status()));
+    }
+
+    let repos: Vec<GithubRepoResponse> = resp.json().await.map_err(|e| e.to_string())?;
+
+    Ok(repos
+        .into_iter()
+        .map(|r| RemoteRepo {
+            name: r.name,
+            full_name: r.full_name,
+            clone_url: r.clone_url,
+            private: r.private,
+        })
+        .collect())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -593,10 +671,12 @@ pub fn run() {
             get_commit_history,
             has_remote,
             set_remote,
+            real_clone,
             real_push,
             real_fetch,
             real_pull,
             check_pat,
+            list_my_repos,
         ])
         .setup(|_app| {
             #[cfg(debug_assertions)]
@@ -912,6 +992,75 @@ mod tests {
 
         fs::remove_dir_all(&origin_dir).unwrap();
         fs::remove_dir_all(&clone_dir).unwrap();
+    }
+
+    #[test]
+    fn clone_creates_working_repo_with_history() {
+        let _guard = COMMIT_TEST_LOCK.lock().unwrap();
+        let origin_dir = temp_repo_path();
+        let origin_path = origin_dir.to_str().unwrap().to_string();
+        init_repo(origin_path.clone()).unwrap();
+        fs::write(origin_dir.join("a.txt"), "a\n").unwrap();
+        real_commit(
+            origin_path.clone(),
+            "Origin Author".to_string(),
+            "origin@example.com".to_string(),
+            "Initial commit".to_string(),
+            vec!["a.txt".to_string()],
+        )
+        .unwrap();
+
+        // dest_path must not exist yet — git2 creates it during clone.
+        let mut dest_dir = std::env::temp_dir();
+        dest_dir.push(format!(
+            "ghostgit-clone-dest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let dest_path = dest_dir.to_str().unwrap().to_string();
+
+        real_clone(origin_path, dest_path.clone(), "dummy-pat".to_string())
+            .expect("clone should succeed");
+
+        assert!(is_git_repo(dest_path.clone()));
+        assert!(dest_dir.join("a.txt").exists());
+
+        let history = get_commit_history(dest_path).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].message, "Initial commit");
+
+        fs::remove_dir_all(&origin_dir).unwrap();
+        fs::remove_dir_all(&dest_dir).unwrap();
+    }
+
+    #[test]
+    fn clone_requires_non_empty_pat() {
+        let dir = temp_repo_path();
+        let path = dir.to_str().unwrap().to_string();
+        let result = real_clone(
+            "https://example.com/user/repo.git".to_string(),
+            path,
+            "".to_string(),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("PAT"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn clone_requires_non_empty_url() {
+        let mut dest_dir = std::env::temp_dir();
+        dest_dir.push(format!(
+            "ghostgit-clone-empty-url-{}",
+            std::process::id()
+        ));
+        let dest_path = dest_dir.to_str().unwrap().to_string();
+        let result = real_clone("".to_string(), dest_path, "dummy-pat".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("URL"));
     }
 
     #[test]

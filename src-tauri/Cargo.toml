@@ -1,6 +1,6 @@
 [package]
 name = "ghostgit"
-version = "0.1.2"
+version = "0.2.0"
 description = "A minimal, incognito-style Git client"
 edition = "2021"
 
