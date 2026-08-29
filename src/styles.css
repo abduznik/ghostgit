@@ -826,3 +826,72 @@ html, body {
     transform: translateY(0) scale(1) rotate(0deg);
   }
 }
+
+/* ---------- .gitignore modal ---------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 24px;
+}
+
+.modal-overlay.hidden {
+  display: none;
+}
+
+.modal {
+  width: 560px;
+  max-width: 92vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 24px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+.modal h2 {
+  margin: 0 0 6px 0;
+  font-size: 17px;
+}
+
+.modal-hint {
+  margin: 0 0 16px 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.gitignore-content {
+  width: 100%;
+  padding: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.gitignore-content:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.gitignore-exists-note {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  color: #e8b64c;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

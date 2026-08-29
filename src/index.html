@@ -86,6 +86,7 @@
         <span id="modeBadge" class="mode-badge">Demo</span>
       </div>
       <div class="topbar-right">
+        <button id="gitignoreBtn" class="btn ghost">Add .gitignore</button>
         <button id="fetchBtn" class="btn ghost">Fetch</button>
         <button id="pullBtn" class="btn ghost">Pull</button>
         <button id="pushBtn" class="btn primary">Push</button>
@@ -139,6 +140,31 @@
       <button id="backToOnboardingBtn" class="btn secondary full">Choose a Different Folder</button>
     </div>
   </section>
+
+  <!-- GITIGNORE TEMPLATE MODAL -->
+  <div id="gitignoreModal" class="modal-overlay hidden">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="gitignoreModalTitle">
+      <h2 id="gitignoreModalTitle">Add .gitignore</h2>
+      <p class="modal-hint">Pick a template (like GitHub) or write your own rules, then create the file in your repo root.</p>
+
+      <div class="field">
+        <label for="gitignoreTemplateSelect">Template</label>
+        <select id="gitignoreTemplateSelect"></select>
+      </div>
+
+      <div class="field">
+        <label for="gitignoreContent">Rules</label>
+        <textarea id="gitignoreContent" class="gitignore-content mono" rows="12" spellcheck="false"></textarea>
+      </div>
+
+      <p id="gitignoreExistsNote" class="gitignore-exists-note hidden"></p>
+
+      <div class="modal-actions">
+        <button id="gitignoreCancelBtn" class="btn">Cancel</button>
+        <button id="gitignoreCreateBtn" class="btn primary">Create .gitignore</button>
+      </div>
+    </div>
+  </div>
 
   <!-- TOAST -->
   <div id="toast" class="toast hidden"></div>

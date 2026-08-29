@@ -7,6 +7,8 @@ use std::time::Duration;
 use tauri::Manager;
 use tauri::State;
 
+mod gitignore_templates;
+
 // Windows holds an exclusive lock on a file while another process has it
 // open (editor, build watcher, antivirus scan), which makes libgit2's file
 // reads/writes fail transiently with a "sharing violation" style error.
@@ -106,6 +108,56 @@ fn is_git_repo(repo_path: String) -> bool {
 fn init_repo(repo_path: String) -> Result<(), String> {
     Repository::init(Path::new(&repo_path)).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// The template creator's picker source: the bundled templates modeled after
+// GitHub's .gitignore templates. Single source of truth lives in
+// gitignore_templates.rs so the frontend never hardcodes template text.
+#[tauri::command]
+fn list_gitignore_templates() -> Vec<gitignore_templates::GitignoreTemplate> {
+    gitignore_templates::list()
+}
+
+// Whether a .gitignore already exists at the repo root, so the UI can offer
+// to overwrite it (or warn) instead of silently clobbering user rules.
+#[tauri::command]
+fn gitignore_exists(repo_path: String) -> bool {
+    Path::new(&repo_path).join(".gitignore").is_file()
+}
+
+// Writes .gitignore at the repo root. Without overwrite, an existing file
+// is refused so user rules are never clobbered accidentally. Returns
+// "created" or "updated" so the UI can phrase its toast accordingly.
+#[tauri::command]
+fn write_gitignore(repo_path: String, content: String, overwrite: bool) -> Result<String, String> {
+    let path = Path::new(&repo_path).join(".gitignore");
+    let existed = path.is_file();
+
+    if existed && !overwrite {
+        return Err("A .gitignore already exists in this repository".into());
+    }
+
+    retry_write_file(&path, content.as_bytes())
+        .map_err(|e| format!("Failed to write .gitignore: {e}"))?;
+
+    Ok(if existed { "updated" } else { "created" }.into())
+}
+
+// std::fs errors don't carry libgit2's ErrorClass/ErrorCode, so sharing
+// violations here are detected by raw_os_error instead (Windows error 32,
+// ERROR_SHARING_VIOLATION).
+fn retry_write_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match std::fs::write(path, contents) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt + 1 < LOCK_RETRY_ATTEMPTS && e.raw_os_error() == Some(32) => {
+                attempt += 1;
+                std::thread::sleep(LOCK_RETRY_DELAY);
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 // Real: walks working tree + index status via git2::Repository::statuses
@@ -661,6 +713,9 @@ pub fn run() {
             clear_session,
             is_git_repo,
             init_repo,
+            list_gitignore_templates,
+            gitignore_exists,
+            write_gitignore,
             get_changed_files,
             get_file_diff,
             discard_file,
@@ -1198,6 +1253,153 @@ mod tests {
         );
         assert!(result.is_err(), "committing an ignored path should fail");
         assert!(result.unwrap_err().contains("gitignore"));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn list_gitignore_templates_returns_bundled_set() {
+        let templates = list_gitignore_templates();
+        assert!(!templates.is_empty());
+        let names: Vec<&str> = templates.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"Node"));
+        assert!(names.contains(&"Python"));
+        assert!(names.contains(&"Rust"));
+        assert!(
+            templates.iter().all(|t| !t.content.trim().is_empty()),
+            "every template must ship non-empty content"
+        );
+    }
+
+    #[test]
+    fn gitignore_exists_reflects_file_presence() {
+        let _guard = COMMIT_TEST_LOCK.lock().unwrap();
+        let dir = temp_repo_path();
+        let path = dir.to_str().unwrap().to_string();
+        init_repo(path.clone()).unwrap();
+
+        assert!(!gitignore_exists(path.clone()));
+        fs::write(dir.join(".gitignore"), "node_modules/\n").unwrap();
+        assert!(gitignore_exists(path.clone()));
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_gitignore_creates_file_and_hides_matching_paths() {
+        let _guard = COMMIT_TEST_LOCK.lock().unwrap();
+        let dir = temp_repo_path();
+        let path = dir.to_str().unwrap().to_string();
+        init_repo(path.clone()).unwrap();
+
+        // The Rust template ignores target/ — create it via the command, then
+        // confirm the app "notices" it: target/ vanishes from changed files
+        // while the .gitignore itself shows up as a new file.
+        let rust_template = list_gitignore_templates()
+            .into_iter()
+            .find(|t| t.name == "Rust")
+            .expect("Rust template should exist");
+        let result = write_gitignore(path.clone(), rust_template.content, false).unwrap();
+        assert_eq!(result, "created");
+        assert!(gitignore_exists(path.clone()));
+
+        fs::create_dir_all(dir.join("target")).unwrap();
+        fs::write(dir.join("target/build.out"), "ignored\n").unwrap();
+
+        let files = get_changed_files(path.clone()).unwrap();
+        assert!(
+            files.iter().all(|f| f.path != "target/build.out"),
+            "target/build.out should be hidden by the created .gitignore: {:?}",
+            files
+        );
+        assert!(
+            files.iter().any(|f| f.path == ".gitignore"),
+            ".gitignore itself should appear as a new file: {:?}",
+            files
+        );
+
+        // And commit refuses the ignored path even if asked directly.
+        let commit = real_commit(
+            path.clone(),
+            "Test Author".to_string(),
+            "test@example.com".to_string(),
+            "Should fail".to_string(),
+            vec!["target/build.out".to_string()],
+        );
+        assert!(commit.is_err());
+
+        // The .gitignore file itself is not ignored, so the user can commit
+        // it — the end of the template-creator flow.
+        let commit = real_commit(
+            path.clone(),
+            "Test Author".to_string(),
+            "test@example.com".to_string(),
+            "Add .gitignore".to_string(),
+            vec![".gitignore".to_string()],
+        );
+        assert!(
+            commit.is_ok(),
+            "committing the created .gitignore should work"
+        );
+
+        let files_after = get_changed_files(path.clone()).unwrap();
+        assert!(
+            files_after.iter().all(|f| f.path != ".gitignore"),
+            ".gitignore should no longer be listed after its commit: {:?}",
+            files_after
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_gitignore_refuses_overwrite_without_flag() {
+        let _guard = COMMIT_TEST_LOCK.lock().unwrap();
+        let dir = temp_repo_path();
+        let path = dir.to_str().unwrap().to_string();
+        init_repo(path.clone()).unwrap();
+
+        write_gitignore(path.clone(), "first\n".into(), false).unwrap();
+
+        let result = write_gitignore(path.clone(), "second\n".into(), false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already exists"));
+
+        // Original content untouched.
+        let content = fs::read_to_string(dir.join(".gitignore")).unwrap();
+        assert_eq!(content, "first\n");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_gitignore_overwrites_when_requested() {
+        let _guard = COMMIT_TEST_LOCK.lock().unwrap();
+        let dir = temp_repo_path();
+        let path = dir.to_str().unwrap().to_string();
+        init_repo(path.clone()).unwrap();
+
+        write_gitignore(path.clone(), "old\n".into(), false).unwrap();
+
+        let result = write_gitignore(path.clone(), "new\n".into(), true).unwrap();
+        assert_eq!(result, "updated");
+
+        let content = fs::read_to_string(dir.join(".gitignore")).unwrap();
+        assert_eq!(content, "new\n");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_gitignore_works_without_repo_init() {
+        // .gitignore is a plain file at the folder root — it doesn't depend
+        // on the folder being a git repo (e.g. created before init).
+        let _guard = COMMIT_TEST_LOCK.lock().unwrap();
+        let dir = temp_repo_path();
+        let path = dir.to_str().unwrap().to_string();
+
+        write_gitignore(path.clone(), "scratch.txt\n".into(), false).unwrap();
+        assert!(dir.join(".gitignore").is_file());
 
         fs::remove_dir_all(&dir).unwrap();
     }

@@ -117,6 +117,13 @@ const commitMessageInput = document.getElementById("commitMessage");
 const commitBtn = document.getElementById("commitBtn");
 const commitHistoryEl = document.getElementById("commitHistory");
 const toast = document.getElementById("toast");
+const gitignoreBtn = document.getElementById("gitignoreBtn");
+const gitignoreModal = document.getElementById("gitignoreModal");
+const gitignoreTemplateSelect = document.getElementById("gitignoreTemplateSelect");
+const gitignoreContent = document.getElementById("gitignoreContent");
+const gitignoreCreateBtn = document.getElementById("gitignoreCreateBtn");
+const gitignoreCancelBtn = document.getElementById("gitignoreCancelBtn");
+const gitignoreExistsNote = document.getElementById("gitignoreExistsNote");
 
 // Demo mode fallback data — used only when no real folder is selected.
 const DEMO_FILES = [
@@ -851,4 +858,96 @@ closeSessionBtn.addEventListener("click", async () => {
 
   workspaceScreen.classList.add("hidden");
   onboardingScreen.classList.remove("hidden");
+});
+
+// ---------- .gitignore template creator ----------
+
+// name -> template text, fetched once from the Rust backend so the bundled
+// template set stays the single source of truth.
+const gitignoreTemplates = new Map();
+
+async function openGitignoreModal() {
+  if (!currentRepoPath) {
+    showToast("Add .gitignore (mock)");
+    return;
+  }
+
+  try {
+    if (gitignoreTemplates.size === 0) {
+      const templates = await invoke("list_gitignore_templates");
+      templates.forEach((t) => gitignoreTemplates.set(t.name, t.content));
+    }
+
+    const hasFile = await invoke("gitignore_exists", { repoPath: currentRepoPath });
+    gitignoreExistsNote.classList.toggle("hidden", !hasFile);
+    gitignoreExistsNote.textContent = hasFile
+      ? "A .gitignore already exists — creating will overwrite it."
+      : "";
+    gitignoreCreateBtn.textContent = hasFile ? "Overwrite .gitignore" : "Create .gitignore";
+
+    const previous = gitignoreTemplateSelect.value;
+    gitignoreTemplateSelect.innerHTML = "";
+    const names = [...gitignoreTemplates.keys()];
+    names.forEach((name) => {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      gitignoreTemplateSelect.appendChild(option);
+    });
+    gitignoreTemplateSelect.value = gitignoreTemplates.has(previous) ? previous : names[0];
+    gitignoreContent.value = gitignoreTemplates.get(gitignoreTemplateSelect.value) || "";
+
+    gitignoreModal.classList.remove("hidden");
+  } catch (err) {
+    console.error("Failed to load gitignore templates:", err);
+    showToast(`Error: ${err}`, "error");
+  }
+}
+
+gitignoreBtn.addEventListener("click", openGitignoreModal);
+
+gitignoreTemplateSelect.addEventListener("change", () => {
+  gitignoreContent.value = gitignoreTemplates.get(gitignoreTemplateSelect.value) || "";
+});
+
+function closeGitignoreModal() {
+  gitignoreModal.classList.add("hidden");
+}
+
+gitignoreCancelBtn.addEventListener("click", closeGitignoreModal);
+
+gitignoreModal.addEventListener("click", (e) => {
+  if (e.target === gitignoreModal) closeGitignoreModal();
+});
+
+gitignoreCreateBtn.addEventListener("click", async () => {
+  const content = gitignoreContent.value;
+  if (!content.trim()) {
+    showToast("Enter at least one ignore rule", "error");
+    return;
+  }
+
+  const hasFile = await invoke("gitignore_exists", { repoPath: currentRepoPath }).catch(
+    () => false
+  );
+  if (hasFile && !window.confirm("Overwrite the existing .gitignore with these rules?")) {
+    return;
+  }
+
+  gitignoreCreateBtn.disabled = true;
+  try {
+    const result = await invoke("write_gitignore", {
+      repoPath: currentRepoPath,
+      content,
+      overwrite: hasFile,
+    });
+    closeGitignoreModal();
+    showToast(result === "updated" ? ".gitignore updated!" : ".gitignore created!", "success");
+    await refreshFileList();
+  } catch (err) {
+    console.error("Failed to write .gitignore:", err);
+    showToast(`Error: ${err}`, "error");
+  } finally {
+    gitignoreCreateBtn.disabled = false;
+  }
 });

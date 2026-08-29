@@ -27,6 +27,7 @@ Most Git GUIs assume you live in one repo, on one machine, with global `user.nam
 - **Branch switching** from a simple dropdown.
 - **Fetch, pull (fast-forward), and push** against a remote, authenticated with a GitHub Personal Access Token.
 - **`.gitignore`-aware staging** — ignored paths are refused at commit time, not silently included.
+- **`.gitignore` template creator** — generate a `.gitignore` from bundled GitHub-style templates (Node, Python, Rust, and more), edit it, and write it to your repo root with one click.
 - **Repo initialization** — point Ghostgit at a plain folder and initialize it as a git repo in one click.
 - **No persisted secrets** — your PAT lives only for the current session.
 
